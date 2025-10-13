@@ -19,6 +19,13 @@ import VideoTimeline from "@/components/VideoTimeline";
 import ClipsList from "@/components/ClipsList";
 import { supabase } from "@/integrations/supabase/client";
 
+declare global {
+  interface Window {
+    YT: any;
+    onYouTubeIframeAPIReady: () => void;
+  }
+}
+
 interface Clip {
   id: string;
   start: number;
@@ -31,6 +38,8 @@ const Editor = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const videoRef = useRef<HTMLVideoElement>(null);
+  const youtubePlayerRef = useRef<any>(null);
+  const playerContainerRef = useRef<HTMLDivElement>(null);
   
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -40,9 +49,12 @@ const Editor = () => {
   const [clips, setClips] = useState<Clip[]>([]);
   const [selectedClip, setSelectedClip] = useState<string | null>(null);
   const [videoId, setVideoId] = useState<string | null>(null);
+  const [youtubeReady, setYoutubeReady] = useState(false);
 
   const videoFile = location.state?.videoFile;
   const videoUrl = location.state?.videoUrl;
+  
+  const isYouTubeUrl = videoUrl && (videoUrl.includes('youtube.com') || videoUrl.includes('youtu.be'));
 
   useEffect(() => {
     if (!videoFile && !videoUrl) {
@@ -50,9 +62,58 @@ const Editor = () => {
       return;
     }
 
-    // Analyze video with AI
+    // Load YouTube API if needed
+    if (isYouTubeUrl && !window.YT) {
+      const tag = document.createElement('script');
+      tag.src = 'https://www.youtube.com/iframe_api';
+      const firstScriptTag = document.getElementsByTagName('script')[0];
+      firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
+      
+      window.onYouTubeIframeAPIReady = () => {
+        setYoutubeReady(true);
+      };
+    } else if (isYouTubeUrl && window.YT) {
+      setYoutubeReady(true);
+    }
+
     analyzeVideo();
   }, [videoFile, videoUrl, navigate]);
+
+  // Initialize YouTube Player
+  useEffect(() => {
+    if (!isYouTubeUrl || !youtubeReady || !playerContainerRef.current || youtubePlayerRef.current) {
+      return;
+    }
+
+    const videoIdMatch = videoUrl?.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/);
+    const ytVideoId = videoIdMatch ? videoIdMatch[1] : null;
+
+    if (!ytVideoId) return;
+
+    youtubePlayerRef.current = new window.YT.Player(playerContainerRef.current, {
+      videoId: ytVideoId,
+      playerVars: {
+        controls: 0,
+        modestbranding: 1,
+        rel: 0,
+      },
+      events: {
+        onReady: (event: any) => {
+          setDuration(event.target.getDuration());
+          // Update currentTime periodically
+          const interval = setInterval(() => {
+            if (youtubePlayerRef.current && youtubePlayerRef.current.getCurrentTime) {
+              setCurrentTime(youtubePlayerRef.current.getCurrentTime());
+            }
+          }, 100);
+          return () => clearInterval(interval);
+        },
+        onStateChange: (event: any) => {
+          setIsPlaying(event.data === window.YT.PlayerState.PLAYING);
+        },
+      },
+    });
+  }, [isYouTubeUrl, youtubeReady, videoUrl]);
 
   const loadClips = async (vId: string) => {
     const { data, error } = await supabase
@@ -136,7 +197,13 @@ const Editor = () => {
   };
 
   const togglePlayPause = () => {
-    if (videoRef.current) {
+    if (isYouTubeUrl && youtubePlayerRef.current) {
+      if (isPlaying) {
+        youtubePlayerRef.current.pauseVideo();
+      } else {
+        youtubePlayerRef.current.playVideo();
+      }
+    } else if (videoRef.current) {
       if (isPlaying) {
         videoRef.current.pause();
       } else {
@@ -159,7 +226,10 @@ const Editor = () => {
   };
 
   const handleSeek = (value: number[]) => {
-    if (videoRef.current) {
+    if (isYouTubeUrl && youtubePlayerRef.current) {
+      youtubePlayerRef.current.seekTo(value[0], true);
+      setCurrentTime(value[0]);
+    } else if (videoRef.current) {
       videoRef.current.currentTime = value[0];
       setCurrentTime(value[0]);
     }
@@ -168,21 +238,31 @@ const Editor = () => {
   const handleVolumeChange = (value: number[]) => {
     const newVolume = value[0];
     setVolume(newVolume);
-    if (videoRef.current) {
+    if (isYouTubeUrl && youtubePlayerRef.current) {
+      youtubePlayerRef.current.setVolume(newVolume * 100);
+    } else if (videoRef.current) {
       videoRef.current.volume = newVolume;
     }
   };
 
   const skipTime = (seconds: number) => {
-    if (videoRef.current) {
-      videoRef.current.currentTime = Math.max(0, Math.min(duration, currentTime + seconds));
+    const newTime = Math.max(0, Math.min(duration, currentTime + seconds));
+    if (isYouTubeUrl && youtubePlayerRef.current) {
+      youtubePlayerRef.current.seekTo(newTime, true);
+    } else if (videoRef.current) {
+      videoRef.current.currentTime = newTime;
     }
   };
 
   const jumpToClip = (clip: Clip) => {
-    if (videoRef.current) {
+    setSelectedClip(clip.id);
+    if (isYouTubeUrl && youtubePlayerRef.current) {
+      youtubePlayerRef.current.seekTo(clip.start, true);
+      if (!isPlaying) {
+        youtubePlayerRef.current.playVideo();
+      }
+    } else if (videoRef.current) {
       videoRef.current.currentTime = clip.start;
-      setSelectedClip(clip.id);
       if (!isPlaying) {
         videoRef.current.play();
         setIsPlaying(true);
@@ -201,17 +281,9 @@ const Editor = () => {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const getYouTubeEmbedUrl = (url: string) => {
-    const videoIdMatch = url.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/);
-    return videoIdMatch ? `https://www.youtube.com/embed/${videoIdMatch[1]}` : null;
-  };
-
   const videoSource = videoFile 
     ? URL.createObjectURL(videoFile)
     : videoUrl || "";
-  
-  const isYouTubeUrl = videoUrl && (videoUrl.includes('youtube.com') || videoUrl.includes('youtu.be'));
-  const youtubeEmbedUrl = isYouTubeUrl && videoUrl ? getYouTubeEmbedUrl(videoUrl) : null;
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -256,13 +328,8 @@ const Editor = () => {
           {/* Video Player */}
           <Card className="overflow-hidden shadow-card">
             <div className="aspect-video bg-player-bg relative">
-              {youtubeEmbedUrl ? (
-                <iframe
-                  src={youtubeEmbedUrl}
-                  className="w-full h-full"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                  allowFullScreen
-                />
+              {isYouTubeUrl ? (
+                <div ref={playerContainerRef} className="w-full h-full" />
               ) : (
                 <video
                   ref={videoRef}
