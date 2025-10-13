@@ -201,9 +201,17 @@ const Editor = () => {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
+  const getYouTubeEmbedUrl = (url: string) => {
+    const videoIdMatch = url.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/);
+    return videoIdMatch ? `https://www.youtube.com/embed/${videoIdMatch[1]}` : null;
+  };
+
   const videoSource = videoFile 
     ? URL.createObjectURL(videoFile)
     : videoUrl || "";
+  
+  const isYouTubeUrl = videoUrl && (videoUrl.includes('youtube.com') || videoUrl.includes('youtu.be'));
+  const youtubeEmbedUrl = isYouTubeUrl && videoUrl ? getYouTubeEmbedUrl(videoUrl) : null;
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -248,13 +256,22 @@ const Editor = () => {
           {/* Video Player */}
           <Card className="overflow-hidden shadow-card">
             <div className="aspect-video bg-player-bg relative">
-              <video
-                ref={videoRef}
-                src={videoSource}
-                className="w-full h-full"
-                onTimeUpdate={handleTimeUpdate}
-                onLoadedMetadata={handleLoadedMetadata}
-              />
+              {youtubeEmbedUrl ? (
+                <iframe
+                  src={youtubeEmbedUrl}
+                  className="w-full h-full"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowFullScreen
+                />
+              ) : (
+                <video
+                  ref={videoRef}
+                  src={videoSource}
+                  className="w-full h-full"
+                  onTimeUpdate={handleTimeUpdate}
+                  onLoadedMetadata={handleLoadedMetadata}
+                />
+              )}
               
               {isAnalyzing && (
                 <div className="absolute inset-0 bg-background/90 flex items-center justify-center">
