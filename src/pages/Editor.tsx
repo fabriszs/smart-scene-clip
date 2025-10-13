@@ -17,6 +17,7 @@ import {
 import { toast } from "sonner";
 import VideoTimeline from "@/components/VideoTimeline";
 import ClipsList from "@/components/ClipsList";
+import { supabase } from "@/integrations/supabase/client";
 
 interface Clip {
   id: string;
@@ -38,6 +39,7 @@ const Editor = () => {
   const [isAnalyzing, setIsAnalyzing] = useState(true);
   const [clips, setClips] = useState<Clip[]>([]);
   const [selectedClip, setSelectedClip] = useState<string | null>(null);
+  const [videoId, setVideoId] = useState<string | null>(null);
 
   const videoFile = location.state?.videoFile;
   const videoUrl = location.state?.videoUrl;
@@ -48,50 +50,89 @@ const Editor = () => {
       return;
     }
 
-    // Simula análise de IA
-    simulateAIAnalysis();
+    // Analyze video with AI
+    analyzeVideo();
   }, [videoFile, videoUrl, navigate]);
 
-  const simulateAIAnalysis = () => {
+  const loadClips = async (vId: string) => {
+    const { data, error } = await supabase
+      .from("clips")
+      .select("*")
+      .eq("video_id", vId)
+      .order("score", { ascending: false });
+
+    if (error) {
+      console.error("Error loading clips:", error);
+      return;
+    }
+
+    if (data) {
+      const formattedClips = data.map(clip => ({
+        id: clip.id,
+        start: clip.start_time,
+        end: clip.end_time,
+        score: clip.score,
+        reason: clip.reason
+      }));
+      setClips(formattedClips);
+    }
+  };
+
+  const analyzeVideo = async () => {
+    const videoSource = videoFile || videoUrl;
+    if (!videoSource) return;
+    
     setIsAnalyzing(true);
     
-    // Simula processamento de IA por 3 segundos
-    setTimeout(() => {
-      const mockClips: Clip[] = [
-        {
-          id: "1",
-          start: 5,
-          end: 15,
-          score: 0.95,
-          reason: "Pico de intensidade de áudio e movimento"
-        },
-        {
-          id: "2",
-          start: 32,
-          end: 45,
-          score: 0.88,
-          reason: "Mudança de cena dramática"
-        },
-        {
-          id: "3",
-          start: 67,
-          end: 78,
-          score: 0.92,
-          reason: "Momento de alta energia"
-        },
-        {
-          id: "4",
-          start: 95,
-          end: 110,
-          score: 0.85,
-          reason: "Pico emocional detectado"
-        }
-      ];
+    try {
+      const { data: video, error: videoError } = await supabase
+        .from("videos")
+        .insert({
+          title: videoFile ? videoFile.name : "Video from URL",
+          external_url: videoUrl,
+          file_url: videoFile ? URL.createObjectURL(videoFile) : null,
+          status: "analyzing"
+        })
+        .select()
+        .single();
+
+      if (videoError) throw videoError;
       
-      setClips(mockClips);
-      setIsAnalyzing(false);
+      setVideoId(video.id);
+
+      // Simulate AI analysis with mock clips
+      const mockClips = [
+        { start_time: 5, end_time: 15, score: 0.95, reason: "Pico de intensidade de áudio e movimento" },
+        { start_time: 32, end_time: 45, score: 0.88, reason: "Mudança de cena dramática" },
+        { start_time: 67, end_time: 78, score: 0.92, reason: "Momento de alta energia" },
+        { start_time: 95, end_time: 110, score: 0.85, reason: "Pico emocional detectado" },
+      ];
+
+      const { error: clipsError } = await supabase
+        .from("clips")
+        .insert(
+          mockClips.map(clip => ({
+            video_id: video.id,
+            ...clip
+          }))
+        );
+
+      if (clipsError) throw clipsError;
+
+      await supabase
+        .from("videos")
+        .update({ status: "completed" })
+        .eq("id", video.id);
+
+      await loadClips(video.id);
+      
       toast.success(`${mockClips.length} momentos incríveis identificados!`);
-    }, 3000);
+    } catch (error) {
+      console.error("Error analyzing video:", error);
+      toast.error("Erro ao analisar o vídeo. Tente novamente.");
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   const togglePlayPause = () => {
